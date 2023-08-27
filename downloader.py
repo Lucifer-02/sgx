@@ -346,8 +346,8 @@ if __name__ == "__main__":
     errors = get_range_files(
         request_files=request_files,
         save_dir="downloads",
-        start_date="2023-07-12",
-        end_date="2023-07-21",
+        start_date="2023-08-12",
+        end_date="2023-08-21",
         db=db,
     )
     # errors = get_last_files(
