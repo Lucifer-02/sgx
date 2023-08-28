@@ -3,10 +3,10 @@ from urllib.request import urlopen, urlretrieve
 from urllib.error import HTTPError, URLError, ContentTooShortError
 import cgi
 from datetime import datetime
-from playwright.sync_api import Playwright, sync_playwright
 import logging
-import pandas as pd
 import os
+import pandas as pd
+from playwright.sync_api import Playwright, sync_playwright
 
 
 def _log_init():
@@ -44,18 +44,18 @@ def _get_date_from_id(date_id: int) -> datetime | None:
         filename = params["filename"]
         return _extract_date_from_filename(filename)
     else:
-        logging.warning(f"Content disposition is None. Not found '{url}'.")
-        logging.getLogger("failed").error(f"{url}\tFileNotFoundError")
+        logging.warning("Content disposition is None. Not found '%s'.", url)
+        logging.getLogger("failed").error("%s\tFileNotFoundError", url)
     return None
 
 
-def _get_id_from_date(date: datetime, db: pd.DataFrame) -> int | None:
-    db = _update_db(db)
-    return db[db["date"] == date]["date_id"].values[0]
+def _get_id_from_date(date: datetime, index_table: pd.DataFrame) -> int | None:
+    index_table = _update_db(index_table)
+    return index_table[index_table["date"] == date]["date_id"].values[0]
 
 
 def _download_file(url: str, save_dir: str, timeout=3) -> str | None:
-    logging.info(f"Downloading {url}")
+    logging.info("Downloading %s", url)
     file_info = urlopen(url=url, timeout=timeout)
     content_disposition = file_info.info()["Content-Disposition"]
     if content_disposition is not None:
@@ -67,9 +67,10 @@ def _download_file(url: str, save_dir: str, timeout=3) -> str | None:
         )
     else:
         logging.warning(
-            f"Content disposition is None. Not found '{url}'. Download failed."
+            "Content disposition is None. Not found '%s'. Download failed.", url
         )
-        logging.getLogger("failed").error(f"{url}\tFileNotFoundError")
+        logging.getLogger("failed").error("'%s'\tFileNotFoundError", url)
+
         return None
 
     return downloaded_file
@@ -86,41 +87,43 @@ def _get_file_by_id(request_file: str, save_dir: str, date_id: int) -> bool:
         downloaded_file = _download_file(url, save_dir)
         success = False if downloaded_file is None else True
 
-    except HTTPError as he:
-        logging.error(f"HTTPError: {he}")
+    except HTTPError as http_error:
+        logging.error("HTTPError: %s", http_error)
         success = False
-    except FileNotFoundError as fnfe:
-        logging.error(f"FileNotFoundError: {fnfe}")
+    except FileNotFoundError as file_not_found_error:
+        logging.error("FileNotFoundError: %s", file_not_found_error)
         success = False
-    except ContentTooShortError as ctse:
-        logging.error(f"ContentTooShortError: {ctse}")
+    except ContentTooShortError as content_too_short_error:
+        logging.error("ContentTooShortError: %s", content_too_short_error)
         success = False
-    except URLError as ue:
-        logging.error(f"URLError: {ue}")
+    except URLError as urle:
+        logging.error("URLError: %s", urle)
         success = False
-    except OSError as oe:
-        logging.error(f"OSError: {oe}")
+    except OSError as os_error:
+        logging.error("OSError: %s", os_error)
 
     if success:
-        logging.info(f"Downloaded {downloaded_file}")
-        pass
+        logging.info("Downloaded %s", downloaded_file)
 
     return success
 
 
 def _get_file_by_date(
-    request_files: list[str], save_dir: str, request_date: datetime, db: pd.DataFrame
+    request_files: list[str],
+    save_dir: str,
+    request_date: datetime,
+    database: pd.DataFrame,
 ) -> list[tuple[int, str]]:
-    logging.info(f"Getting file of {request_date}...")
+    logging.info("Getting file of %s", request_date)
 
     errors = []
 
     if _is_weekend(request_date) or _is_future(request_date):
         return []
 
-    date_id = _get_id_from_date(date=request_date, db=db)
+    date_id = _get_id_from_date(date=request_date, index_table=database)
     if date_id is None:
-        logging.warning(f"Date id of {request_date} not found.")
+        logging.warning("Date id of %s not found.", request_date)
         return []
 
     for request_file in request_files:
@@ -132,36 +135,38 @@ def _get_file_by_date(
 
 
 def _get_ids_from_dates(
-    start_date: datetime, end_date: datetime, db: pd.DataFrame
+    start_date: datetime, end_date: datetime, index_table: pd.DataFrame
 ) -> list[int]:
-    db = _update_db(db)
-    date_ids = db[(db["date"] >= start_date) & (db["date"] <= end_date)]["date_id"]
+    index_table = _update_db(index_table)
+    date_ids = index_table[
+        (index_table["date"] >= start_date) & (index_table["date"] <= end_date)
+    ]["date_id"]
     return date_ids.tolist()
 
 
-def _get_least_ids(number: int, db: pd.DataFrame) -> list[int]:
-    db = _update_db(db)
-    date_ids = db["date_id"].tail(number)
+def _get_least_ids(number: int, index_table: pd.DataFrame) -> list[int]:
+    index_table = _update_db(index_table)
+    date_ids = index_table["date_id"].tail(number)
     return date_ids.tolist()
 
 
 def _is_valid_range(start_date: str, end_date: str) -> bool:
     if start_date > end_date:
-        logging.warning(f"Start date is later than end date.")
+        logging.warning("Start date is later than end date.")
         return False
     return True
 
 
 def _is_weekend(date: datetime) -> bool:
     if date.weekday() in [5, 6]:
-        logging.warning(f"{date} is weekend.")
+        logging.warning("%s is weekend.", date)
         return True
     return False
 
 
 def _is_future(date: datetime) -> bool:
     if date > LASTEST_DATE:
-        logging.warning(f"{date} is not in the historical.")
+        logging.warning("%s is not in the historical.", date)
         return True
     return False
 
@@ -171,18 +176,18 @@ def _check_valid_date(date_str: str) -> datetime | None:
         date = datetime.strptime(date_str, "%Y-%m-%d")
         return date
     except ValueError as ve:
-        logging.error(f"ValueError: {ve}")
+        logging.error("ValueError: %s", ve)
 
     return None
 
 
-def _update_db(db: pd.DataFrame) -> pd.DataFrame:
-    db_lastest_date = db["date"].max()
-    db_lastest_id = db["date_id"].max()
+def _update_db(database: pd.DataFrame) -> pd.DataFrame:
+    db_lastest_date = database["date"].max()
+    db_lastest_id = database["date_id"].max()
 
     if db_lastest_date == LASTEST_DATE:
         logging.info("Database is up to date.")
-        return db
+        return database
 
     logging.info("Updating database...")
     date_id = db_lastest_id + 1
@@ -194,26 +199,26 @@ def _update_db(db: pd.DataFrame) -> pd.DataFrame:
             if date is not None:
                 appends.append({"date_id": date_id, "date": date})
 
-        except HTTPError as he:
-            logging.error(f"Get date from id {date_id} failed.")
-            logging.error(f"HTTPError: {he}")
+        except HTTPError as http_error:
+            logging.error("Get date from id %d failed.", date_id)
+            logging.error("HTTPError: %s", http_error)
         date_id += 1
 
     # concat new data to db
-    db = pd.concat([db, pd.DataFrame(appends)], ignore_index=True)
-    db.to_csv("db.csv", index=False)
+    database = pd.concat([database, pd.DataFrame(appends)], ignore_index=True)
+    database.to_csv("db.csv", index=False)
     logging.info("Database updated.")
-    return db
+    return database
 
 
 def _save_errors(errors: list[tuple[int, str]], errors_file="errors.csv"):
     if len(errors) == 0:
         logging.info("No errors.")
         return
-    with open(errors_file, "w") as f:
+    with open(errors_file, "w", encoding="utf-8") as f:
         for error in errors:
             f.write(f"{error[0]},{error[1]}\n")
-    logging.info(f"Errors saved to {errors_file}.")
+    logging.info("Errors saved to %s.", errors_file)
 
 
 def get_file_by_date_str(
@@ -221,7 +226,7 @@ def get_file_by_date_str(
 ) -> list[tuple[int, str]]:
     date = _check_valid_date(request_date)
     if date is None:
-        logging.warning(f"Invalid date: {request_date}, skipping")
+        logging.warning("Invalid date: %s, skipping", request_date)
         return []
 
     return _get_file_by_date(request_files, save_dir, date, db)
@@ -257,7 +262,7 @@ def get_range_files(
     save_dir: str,
     start_date: str,
     end_date: str,
-    db: pd.DataFrame,
+    database: pd.DataFrame,
 ) -> list[tuple[int, str]]:
     start = _check_valid_date(start_date)
     end = _check_valid_date(end_date)
@@ -265,7 +270,7 @@ def get_range_files(
     if start is None or end is None or not _is_valid_range(start_date, end_date):
         return []
 
-    date_ids = _get_ids_from_dates(start, end, db)
+    date_ids = _get_ids_from_dates(start, end, database)
     errors = []
 
     for date_id in date_ids:
@@ -291,7 +296,7 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
         status = _get_file_by_id(request_file, save_dir, date_id)
         if not status:
             new_errors.append((date_id, request_file))
-            logging.error(f"Download {request_file} of {date_id} failed.")
+            logging.error("Download %s of %d failed.", request_file, date_id)
 
     _save_errors(new_errors)
 
@@ -326,29 +331,30 @@ if __name__ == "__main__":
     with sync_playwright() as playwright:
         logging.debug("Getting lastest date...")
         LASTEST_ID, LASTEST_DATE = get_lastest_info(playwright)
-        logging.info(f"Lastest date: {LASTEST_DATE}")
+        logging.info("Lastest date: %s", LASTEST_DATE)
 
     # LASTEST_ID = 5492
     # LASTEST_DATE = datetime(2023, 8, 24)
 
     logging.info("Reading database...")
-    db = pd.read_csv("db.csv", parse_dates=["date"])
+    data_base = pd.read_csv("db.csv", parse_dates=["date"])
 
     # result = get_lastest_file(["WEBPXTICK_DT.zip"], "downloads")
 
     # get_file_by_date("WEBPXTICK_DT.zip", "downloads", "2023-08-31", db)
-    request_files = [
+
+    files = [
         "WEBPXTICK_DT.zip",
         "TC.txt",
         "TickData_structure.dat",
         "TC_structure.dat",
     ]
-    errors = get_range_files(
-        request_files=request_files,
+    all_errors = get_range_files(
+        request_files=files,
         save_dir="downloads",
         start_date="2023-08-12",
         end_date="2023-08-21",
-        db=db,
+        database=data_base,
     )
     # errors = get_last_files(
     #     request_files=request_files,
@@ -356,6 +362,6 @@ if __name__ == "__main__":
     #     days=5,
     #     db=db,
     # )
-    _save_errors(errors)
+    _save_errors(all_errors)
 
     # retry_download_errors()
