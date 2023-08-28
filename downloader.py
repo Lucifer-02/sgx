@@ -13,24 +13,24 @@ import pandas as pd
 from playwright.sync_api import Playwright, sync_playwright
 
 
-def _log_init():
+def _log_init(xargs: argparse.Namespace):
     """Initiate the root logger and an error-only logger."""
     root_logger = logging.getLogger()
-    root_logger.setLevel(args.loglevel.upper())
+    root_logger.setLevel(xargs.loglevel.upper())
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
     )
-    stream_handler.setLevel(args.loglevel.upper())
-    file_handle = logging.FileHandler(filename=args.logfile, encoding="utf8")
+    stream_handler.setLevel(xargs.loglevel.upper())
+    file_handle = logging.FileHandler(filename=xargs.logfile, encoding="utf8")
     file_handle.setFormatter(
         logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
     )
-    file_handle.setLevel(args.loglevel.upper())
+    file_handle.setLevel(xargs.loglevel.upper())
 
     failed = logging.getLogger("failed")
     failed.setLevel(logging.WARNING)
-    failed_file = logging.FileHandler(filename=args.error_file, encoding="utf8")
+    failed_file = logging.FileHandler(filename=xargs.error_file, encoding="utf8")
 
     failed.addHandler(failed_file)
     root_logger.addHandler(file_handle)
@@ -51,11 +51,10 @@ def _id_to_url(date_id: int, filename: str) -> str:
 
 
 def _get_date_from_id(date_id: int) -> datetime | None:
-    dummy_filename = "WEBPXTICK_DT_20210831.zip"
+    dummy_filename = "WEBPXTICK_DT.zip"
     url = _id_to_url(date_id, dummy_filename)
 
     with urlopen(url=url) as response:
-        # response = urlopen(url=url)
         content_disposition = response.headers.get("Content-Disposition")
         if content_disposition is not None:
             _, params = cgi.parse_header(content_disposition)
@@ -96,11 +95,12 @@ def _get_file_by_id(request_file: str, save_dir: str, date_id: int) -> bool:
     failed_log = logging.getLogger("failed")
 
     url = _id_to_url(date_id, request_file)
-    if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
+    sub_dir = f"{save_dir}/{date_id}"
+    if not os.path.exists(sub_dir):
+        os.mkdir(sub_dir)
 
     try:
-        downloaded_file = _download_file(url, save_dir)
+        downloaded_file = _download_file(url, sub_dir)
         success = downloaded_file is not None
 
     except HTTPError as he:
@@ -124,7 +124,7 @@ def _get_file_by_id(request_file: str, save_dir: str, date_id: int) -> bool:
         failed_log.error(f"{date_id},{request_file},OSError,{oe.strerror}")
 
     if success:
-        logging.info(f"Downloaded {downloaded_file} to {save_dir}/")
+        logging.info(f"Downloaded {downloaded_file} to {sub_dir}/")
 
     return success
 
@@ -214,7 +214,7 @@ def _check_valid_date(date_str: str) -> datetime | None:
 def _update_db() -> pd.DataFrame:
     logging.info("Reading database...")
 
-    db = pd.read_csv("db.csv", parse_dates=["date"])
+    db = pd.read_csv("database/db.csv", parse_dates=["date"])
     db_lastest_date = db["date"].max()
     db_lastest_id = db["date_id"].max()
 
@@ -239,7 +239,7 @@ def _update_db() -> pd.DataFrame:
 
     # concat new data to db
     db = pd.concat([db, pd.DataFrame(appends)], ignore_index=True)
-    db.to_csv("db.csv", index=False)
+    db.to_csv("database/db.csv", index=False)
     logging.info("Database updated.")
     return db
 
@@ -250,6 +250,7 @@ def get_files_by_date_str(request_files: list[str], save_dir: str, request_date:
         logging.warning(f"Invalid date: {request_date}, skipping")
         return
 
+    logging.info(f"Downloading files for {date}...")
     _get_file_by_date(request_files, save_dir, date)
 
 
@@ -305,7 +306,7 @@ def get_range_files(
                 date_id=date_id,
             )
 
-    logging.info("Finished downloading files from {start_date} to {end_date}.")
+    logging.info(f"Finished downloading files from {start_date} to {end_date}.")
 
 
 def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
@@ -316,9 +317,7 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
         logging.info("No errors.")
         return
 
-    # header: date_id, request_file, error_type, error_msg
     errors = pd.read_csv(errors_file, header=None)
-    # remove duplicate
     errors = errors.drop_duplicates()
 
     for _, row in errors.iterrows():
@@ -365,95 +364,55 @@ def get_lastest_info(playwright: Playwright) -> tuple[int, datetime]:
     return date_id, date
 
 
-def _load_config():
+def _load_config(xargs: argparse.Namespace) -> argparse.Namespace:
     global URL_PATTERN
+
     config = configparser.ConfigParser()
-    config.read(args.config)
-    # BASE section
+    config.read(xargs.config)
+
     URL_PATTERN = config.get("BASE", "URL_PATTERN")
-    args.dayformat = config.get("BASE", "dayformat")
-    args.output = config.get("BASE", "output")
-    args.logfile = config.get("BASE", "logfile")
-    args.error = config.get("BASE", "errorfile")
-    args.loglevel = config.get("BASE", "loglevel")
-    args.files = config.get("BASE", "downloadfiles").split(",")
+    xargs.dateformat = config.get("BASE", "dateformat")
+    xargs.output = config.get("BASE", "output")
+    xargs.logfile = config.get("BASE", "logfile")
+    xargs.error = config.get("BASE", "errorfile")
+    xargs.loglevel = config.get("BASE", "loglevel")
+    xargs.files = config.get("BASE", "downloadfiles")
 
-    return config
+    return xargs
 
 
-def run(xargs):
-    files = args.files.split(",")
+def run(xargs: argparse.Namespace):
+    if not os.path.exists(xargs.output):
+        os.mkdir(xargs.output)
+
+    files = xargs.files.split(",")
+
     if xargs.update:
-        get_lastest_files(files, args.output)
+        get_lastest_files(files, xargs.output)
 
     if xargs.day:
-        get_files_by_date_str(files, args.output, args.day)
+        get_files_by_date_str(files, xargs.output, xargs.day)
 
-    if xargs.last:
-        get_last_files(files, args.output, args.last)
+    if xargs.start and xargs.end:
+        get_range_files(files, xargs.output, xargs.start, xargs.end)
 
-    if xargs.start and args.end:
-        get_range_files(files, args.output, args.start, args.end)
-
-    if xargs.last and args.last > 0:
-        get_last_files(files, args.output, args.last)
+    if xargs.last and xargs.last > 0:
+        get_last_files(files, xargs.output, xargs.last)
 
     if xargs.retry:
-        retry_download_errors(args.error_file, args.output)
+        retry_download_errors(xargs.error_file, xargs.output)
 
-    logging.info("End of download job.")
-
-
-def _create_default_config(config, config_path):
-    """Create a default config file and save it to the default location.
-
-    Args:
-        config (ConfigParser): The config object to store config options.
-
-        config_path (str): Path to the file save default config.
-
-    Returns:
-        ConfigParser: The config that has been created.
-    """
-    config.add_section("BASE")
-    config.set(
-        "BASE",
-        "URL_PATTERN",
-        "https://links.sgx.com/1.0.0/derivatives-historical/%%d/%%s",
-    )
-    config.set("BASE", "dayformat", "%%Y%%m%%d")
-    config.set("BASE", "output", "downloads")
-    config.set("BASE", "logfile", "sgx-downloader.log")
-    config.set("BASE", "errorfile", "sgx-failed.txt")
-    config.set("BASE", "loglevel", "INFO")
-    config.set(
-        "BASE",
-        "downloadfiles",
-        "WEBPXTICK_DT.zip,TickData_structure.dat,TC.txt,TC_structure.dat",
-    )
-
-    with open(config_path, "w+") as config_file:
-        config.write(config_file)
-    return config
+    logging.info("Done.")
 
 
-def _get_default_config():
-    """Get the default config stored in the config file. If the config file does not exist then create a new file.
-
-    Returns:
-        ConfigParser: config object contain default config.
-    """
+def _get_default_config(config_path: str) -> configparser.ConfigParser:
     config = configparser.ConfigParser()
-    config_folder = os.path.expanduser(".")
-    config_path = os.sep.join([config_folder, "sgx-downloader.cfg"])
-    if os.path.exists(config_path):
-        config.read(config_path)
-        return config
-    return _create_default_config(config, config_path)
+    config.read(config_path)
+    return config
 
 
 if __name__ == "__main__":
-    default_config = _get_default_config()
+    default_config = _get_default_config("configs/default_config.ini")
     parser = argparse.ArgumentParser(description="SGX derivatives data downloader")
     parser.add_argument(
         "--config",
@@ -496,12 +455,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--last",
         type=int,
-        help="Download data from the last N days (not N-latest records). --past 7 only return data maximum of 5 days",
+        help="Download data from the last N days that SGX has data for.",
     )
     parser.add_argument(
         "--retry",
         action="store_true",
-        help="Redownload files listed in ERROR. This option requires a path to the ERROR file or it will take the default.",
+        help="Redownload files listed in failed download log.",
     )
     parser.add_argument(
         "--update",
@@ -527,18 +486,17 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    print(args)
 
     if len(sys.argv) == 1:
         parser.print_help()
-        exit(0)
+        sys.exit(1)
 
     if args.config is not None:
-        config = _load_config()
+        args = _load_config(args)
     else:
         URL_PATTERN = default_config.get("BASE", "URL_PATTERN")
 
-    _log_init()
+    _log_init(args)
     logging.info("--------------------" * 3)
     logging.info("Starting...")
     playwright = sync_playwright().start()
