@@ -136,12 +136,12 @@ def _get_files_by_date(
     request_date: datetime,
 ) -> int:
     if _is_weekend(request_date) or _is_future(request_date):
-        return 0
+        return -1
 
     date_id = _get_id_from_date(date=request_date)
     if date_id is None:
-        logging.warning("Date id of %s not found.", request_date)
-        return 0
+        logging.warning("Date id of %s not found.", request_date.strftime("%Y-%m-%d"))
+        return -1
 
     return _get_files_by_id(request_files, save_dir, date_id)
 
@@ -318,7 +318,13 @@ def get_files_by_date_str(request_files: list[str], save_dir: str, request_date:
 
     logging.info("Downloading files for %s...", date)
     num_errors = _get_files_by_date(request_files, save_dir, date)
-    logging.info("Finished downloading files for %s. %d errors.", date, num_errors)
+
+    if num_errors != -1:
+        logging.info(
+            "Finished downloading files for %s. %d errors.",
+            date.strftime("%Y-%m-%d"),
+            num_errors,
+        )
 
 
 def get_last_files(request_files: list[str], save_dir: str, days: int):
@@ -331,6 +337,7 @@ def get_last_files(request_files: list[str], save_dir: str, days: int):
 
 
 def get_lastest_files(request_files: list[str], save_dir: str):
+    """Download files in the lastest date."""
     num_errors = _get_files_by_date(request_files, save_dir, LASTEST_DATE)
 
     logging.info(
