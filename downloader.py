@@ -14,18 +14,15 @@ from playwright.sync_api import Playwright, sync_playwright
 
 
 def _log_init(xargs: argparse.Namespace):
-    """Initiate the root logger and an error-only logger."""
     root_logger = logging.getLogger()
     root_logger.setLevel(xargs.loglevel.upper())
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     )
     stream_handler.setLevel(xargs.loglevel.upper())
     file_handle = logging.FileHandler(filename=xargs.logfile, encoding="utf8")
-    file_handle.setFormatter(
-        logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
-    )
+    file_handle.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     file_handle.setLevel(xargs.loglevel.upper())
 
     failed = logging.getLogger("failed")
@@ -61,8 +58,10 @@ def _get_date_from_id(date_id: int) -> datetime | None:
             filename = params["filename"]
             return _extract_date_from_filename(filename)
 
-    logging.warning(f"Content disposition is None. Not found '{url}'.")
-    logging.getLogger("failed").error(f"'{url}'\tFileNotFoundError")
+    # logging.warning(f"Content disposition is None. Not found '{url}'.")
+    logging.warning("Content disposition is None. Not found '%s'.", url)
+    # logging.getLogger("failed").error(f"'{url}'\tFileNotFoundError")
+    logging.getLogger("failed").error("'%s'\tFileNotFoundError", url)
 
     return None
 
@@ -105,6 +104,7 @@ def _get_file_by_id(request_file: str, save_dir: str, date_id: int) -> bool:
     except HTTPError as he:
         logging.error(f"HTTPError: {he}")
         failed_log.error(f"{date_id},{request_file},HTTPError,{he.reason}")
+        failed_log.error("%s,%s,HTTPError,%s", date_id, request_file, he.reason)
         success = False
     except FileNotFoundError as fnfe:
         logging.error(f"FileNotFoundError: {fnfe.strerror}")
@@ -193,6 +193,33 @@ def _is_weekend(date: datetime) -> bool:
     return False
 
 
+def _get_lastest_info(playwright: Playwright) -> tuple[int, datetime]:
+    logging.debug("Getting lastest date...")
+    browser = playwright.chromium.launch(headless=True)
+    context = browser.new_context()
+    logging.debug("Navigating to SGX website...")
+    page = context.new_page()
+    page.goto("https://www.sgx.com/research-education/derivatives")
+    with page.expect_download() as download_info:
+        page.locator(
+            "widget-reports-derivatives-tick-and-trade-cancellation"
+        ).get_by_role("button", name="Download").click()
+
+    logging.debug("Getting download info")
+
+    download = download_info.value
+    url = download.url
+    filename = download.suggested_filename
+
+    date_id = _extract_id_from_url(url)
+    date = _extract_date_from_filename(filename)
+
+    # ---------------------
+    context.close()
+    browser.close()
+    return date_id, date
+
+
 def _is_future(date: datetime) -> bool:
     if date > LASTEST_DATE:
         logging.warning(f"{date} is not in the historical.")
@@ -213,7 +240,7 @@ def _check_valid_date(date_str: str) -> datetime | None:
 def _update_db() -> pd.DataFrame:
     logging.info("Reading database...")
 
-    db = pd.read_csv("database/db.csv", parse_dates=["date"])
+    db = pd.read_csv(DATABASE_PATH, parse_dates=["date"])
     db_lastest_date = db["date"].max()
     db_lastest_id = db["date_id"].max()
 
@@ -238,7 +265,7 @@ def _update_db() -> pd.DataFrame:
 
     # concat new data to db
     db = pd.concat([db, pd.DataFrame(appends)], ignore_index=True)
-    db.to_csv("database/db.csv", index=False)
+    db.to_csv(DATABASE_PATH, index=False)
     logging.info("Database updated.")
     return db
 
@@ -254,6 +281,7 @@ def get_files_by_date_str(request_files: list[str], save_dir: str, request_date:
 
 
 def get_last_files(request_files: list[str], save_dir: str, days: int):
+    """"""
     date_ids = _get_least_ids(days)
 
     for date_id in date_ids:
@@ -284,6 +312,8 @@ def get_range_files(
     start_date: str,
     end_date: str,
 ):
+    """Download files in a range of dates."""
+
     from_date = _check_valid_date(start_date)
     to_date = _check_valid_date(end_date)
 
@@ -309,6 +339,8 @@ def get_range_files(
 
 
 def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
+    """Retry download errors in error file."""
+
     logging.info("Retrying download errors...")
 
     # check empty errors file
@@ -328,7 +360,7 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
             date_id=date_id,
         )
         if not status:
-            logging.error("Download %s of %d failed.", request_file, date_id)
+            logging.error("Download {request_file} of {date_id} failed.")
 
         # remove error
         errors = errors[~((errors[0] == date_id) & (errors[1] == request_file))]
@@ -336,40 +368,17 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
     errors.to_csv(errors_file, index=False, header=False)
 
 
-def get_lastest_info(playwright: Playwright) -> tuple[int, datetime]:
-    logging.debug("Getting lastest date...")
-    browser = playwright.chromium.launch(headless=True)
-    context = browser.new_context()
-    logging.debug("Navigating to SGX website...")
-    page = context.new_page()
-    page.goto("https://www.sgx.com/research-education/derivatives")
-    with page.expect_download() as download_info:
-        page.locator(
-            "widget-reports-derivatives-tick-and-trade-cancellation"
-        ).get_by_role("button", name="Download").click()
+def apply_config(xargs: argparse.Namespace) -> argparse.Namespace:
+    """Apply config file to args."""
 
-    logging.debug("Getting download info")
-
-    download = download_info.value
-    url = download.url
-    filename = download.suggested_filename
-
-    date_id = _extract_id_from_url(url)
-    date = _extract_date_from_filename(filename)
-
-    # ---------------------
-    context.close()
-    browser.close()
-    return date_id, date
-
-
-def _apply_config(xargs: argparse.Namespace) -> argparse.Namespace:
-    global URL_PATTERN
+    global URL_PATTERN, DATABASE_PATH
 
     config = configparser.ConfigParser()
     config.read(xargs.config)
 
     URL_PATTERN = config.get("BASE", "URL_PATTERN")
+    DATABASE_PATH = config.get("BASE", "database")
+
     xargs.dateformat = config.get("BASE", "dateformat")
     xargs.output = config.get("BASE", "output")
     xargs.logfile = config.get("BASE", "logfile")
@@ -380,7 +389,21 @@ def _apply_config(xargs: argparse.Namespace) -> argparse.Namespace:
     return xargs
 
 
+LASTEST_ID: int
+LASTEST_DATE: datetime
+
+
 def run(xargs: argparse.Namespace):
+    global LASTEST_ID, LASTEST_DATE
+
+    _log_init(xargs)
+    logging.info("--------------------" * 3)
+    logging.info("Starting...")
+
+    with sync_playwright() as playwright:
+        LASTEST_ID, LASTEST_DATE = _get_lastest_info(playwright)
+        logging.info(f"Lastest date: {LASTEST_DATE}")
+
     if not os.path.exists(xargs.output):
         os.mkdir(xargs.output)
 
@@ -404,14 +427,14 @@ def run(xargs: argparse.Namespace):
     logging.info("Done.")
 
 
-def _get_config(config_path: str) -> configparser.ConfigParser:
+def get_config(config_path: str) -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     config.read(config_path)
     return config
 
 
 if __name__ == "__main__":
-    default_config = _get_config("configs/default_config.ini")
+    default_config = get_config("configs/default_config.ini")
     parser = argparse.ArgumentParser(description="SGX derivatives data downloader")
     parser.add_argument(
         "--config",
@@ -491,15 +514,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args.config is not None:
-        args = _apply_config(args)
+        args = apply_config(args)
     else:
         URL_PATTERN = default_config.get("BASE", "URL_PATTERN")
-
-    _log_init(args)
-    logging.info("--------------------" * 3)
-    logging.info("Starting...")
-    playwright = sync_playwright().start()
-    LASTEST_ID, LASTEST_DATE = get_lastest_info(playwright)
-    logging.info(f"Lastest date: {LASTEST_DATE}")
+        DATABASE_PATH = default_config.get("BASE", "database")
 
     run(args)
