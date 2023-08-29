@@ -8,6 +8,8 @@ import os
 import argparse
 import configparser
 import sys
+from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 from playwright.sync_api import Playwright, sync_playwright
@@ -18,11 +20,13 @@ def _log_init(xargs: argparse.Namespace):
     root_logger.setLevel(xargs.loglevel.upper())
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     )
     stream_handler.setLevel(xargs.loglevel.upper())
     file_handle = logging.FileHandler(filename=xargs.logfile, encoding="utf8")
-    file_handle.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    file_handle.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
     file_handle.setLevel(xargs.loglevel.upper())
 
     failed = logging.getLogger("failed")
@@ -58,9 +62,7 @@ def _get_date_from_id(date_id: int) -> datetime | None:
             filename = params["filename"]
             return _extract_date_from_filename(filename)
 
-    # logging.warning(f"Content disposition is None. Not found '{url}'.")
     logging.warning("Content disposition is None. Not found '%s'.", url)
-    # logging.getLogger("failed").error(f"'{url}'\tFileNotFoundError")
     logging.getLogger("failed").error("'%s'\tFileNotFoundError", url)
 
     return None
@@ -72,7 +74,7 @@ def _get_id_from_date(date: datetime) -> int | None:
 
 
 def _download_file(url: str, save_dir: str, timeout=3) -> str | None:
-    logging.debug(f"Downloading {url}")
+    logging.debug("Downloading %s", url)
     downloaded_file = None
     with urlopen(url=url, timeout=timeout) as file_info:
         content_disposition = file_info.info()["Content-Disposition"]
@@ -93,76 +95,65 @@ def _get_file_by_id(request_file: str, save_dir: str, date_id: int) -> bool:
     failed_log = logging.getLogger("failed")
 
     url = _id_to_url(date_id, request_file)
-    sub_dir = f"{save_dir}/{date_id}"
-    if not os.path.exists(sub_dir):
-        os.mkdir(sub_dir)
 
     try:
-        downloaded_file = _download_file(url, sub_dir)
+        downloaded_file = _download_file(url, save_dir)
         success = downloaded_file is not None
 
     except HTTPError as he:
-        logging.error(f"HTTPError: {he}")
-        failed_log.error(f"{date_id},{request_file},HTTPError,{he.reason}")
+        logging.error("HTTPError: %s", he.reason)
         failed_log.error("%s,%s,HTTPError,%s", date_id, request_file, he.reason)
         success = False
     except FileNotFoundError as fnfe:
-        logging.error(f"FileNotFoundError: {fnfe.strerror}")
-        failed_log.error(f"{date_id},{request_file},FileNotFoundError,{fnfe.strerror}")
+        logging.error("FileNotFoundError: %s", fnfe.strerror)
+        failed_log.error(
+            "%s,%s,FileNotFoundError,%s", date_id, request_file, fnfe.strerror
+        )
         success = False
     except ContentTooShortError as ctse:
-        logging.error(f"ContentTooShortError: {ctse.reason}")
-        failed_log.error(f"{date_id},{request_file},ContentTooShortError,{ctse.reason}")
+        logging.error("ContentTooShortError: %s", ctse.reason)
+        failed_log.error(
+            "%s,%s,ContentTooShortError,%s", date_id, request_file, ctse.reason
+        )
         success = False
     except URLError as ue:
-        logging.error(f"URLError: {ue.reason}")
-        failed_log.error(f"{date_id},{request_file},URLError,{ue.reason}")
+        logging.error("URLError: %s", ue.reason)
+        failed_log.error("%s,%s,URLError,%s", date_id, request_file, ue.reason)
         success = False
     except OSError as oe:
-        logging.error(f"OSError: {oe.strerror}")
-        failed_log.error(f"{date_id},{request_file},OSError,{oe.strerror}")
+        logging.error("OSError: %s", oe.strerror)
+        failed_log.error("%s,%s,OSError,%s", date_id, request_file, oe.strerror)
 
     if success:
-        logging.info(f"Downloaded {downloaded_file} to {sub_dir}/")
+        logging.info("Downloaded %s to %s/", downloaded_file, save_dir)
 
     return success
 
 
-def _get_file_by_date(
+def _get_files_by_date(
     request_files: list[str],
     save_dir: str,
     request_date: datetime,
-) -> list[tuple[int, str]]:
-    errors = []
-
+) -> int:
     if _is_weekend(request_date) or _is_future(request_date):
-        return []
+        return 0
 
     date_id = _get_id_from_date(date=request_date)
     if date_id is None:
-        logging.warning("Date id of {request_date} not found.")
-        return []
+        logging.warning("Date id of %s not found.", request_date)
+        return 0
 
-    for request_file in request_files:
-        status = _get_file_by_id(
-            request_file=request_file,
-            save_dir=save_dir,
-            date_id=date_id,
-        )
-        if not status:
-            errors.append((date_id, request_file))
-
-    return errors
+    return _get_files_by_id(request_files, save_dir, date_id)
 
 
-def get_valid_dates(start_date: datetime, end_date: datetime) -> list[datetime]:
+def _get_valid_dates(start_date: datetime, end_date: datetime) -> list[datetime]:
     dates = []
     date = start_date
     while date <= end_date:
         if not _is_weekend(date) and not _is_future(date):
             dates.append(date)
         else:
-            logging.debug("Skip {date}")
+            logging.debug("Skip %s", date.strftime("%Y-%m-%d"))
         date += timedelta(days=1)
     return dates
 
@@ -188,7 +179,7 @@ def _is_valid_range(start_date: datetime, end_date: datetime) -> bool:
 
 def _is_weekend(date: datetime) -> bool:
     if date.weekday() in [5, 6]:
-        logging.debug(f"{date} is weekend.")
+        logging.debug("%s is weekend.", date.strftime("%Y-%m-%d"))
         return True
     return False
 
@@ -222,7 +213,7 @@ def _get_lastest_info(playwright: Playwright) -> tuple[int, datetime]:
 
 def _is_future(date: datetime) -> bool:
     if date > LASTEST_DATE:
-        logging.warning(f"{date} is not in the historical.")
+        logging.warning("%s is not in the historical.", date)
         return True
     return False
 
@@ -232,7 +223,7 @@ def _check_valid_date(date_str: str) -> datetime | None:
         date = datetime.strptime(date_str, "%Y-%m-%d")
         return date
     except ValueError:
-        logging.error(f"{date_str} Date Format Error!")
+        logging.error("%s Date Format Error!", date_str)
 
     return None
 
@@ -259,8 +250,8 @@ def _update_db() -> pd.DataFrame:
                 appends.append({"date_id": date_id, "date": date})
 
         except HTTPError as http_error:
-            logging.error(f"Get date from id {date_id} failed.")
-            logging.error(f"HTTPError: {http_error}")
+            logging.error("Get date from id %d failed.", date_id)
+            logging.error("HTTPError: %s", http_error.reason)
         date_id += 1
 
     # concat new data to db
@@ -270,40 +261,83 @@ def _update_db() -> pd.DataFrame:
     return db
 
 
+def _get_files_by_id(request_files: list[str], save_dir: str, date_id: int) -> int:
+    sub_dir = f"{save_dir}/{date_id}"
+    if not os.path.exists(sub_dir):
+        os.mkdir(sub_dir)
+
+    error_count = 0
+
+    for request_file in request_files:
+        status = _get_file_by_id(request_file, sub_dir, date_id)
+        if not status:
+            error_count += 1
+
+    # with Pool() as p:
+    #     p.starmap(
+    #         _get_file_by_id,
+    #         [(request_file, sub_dir, date_id) for request_file in request_files],
+    #     )
+
+    # using multi-threading
+    # with ThreadPoolExecutor(max_workers=12) as executor:
+    #     futures = [
+    #         executor.submit(_get_file_by_id, request_file, sub_dir, date_id)
+    #         for request_file in request_files
+    #     ]
+    #     for future in as_completed(futures):
+    #         future.result()
+
+    return error_count
+
+
+def _get_files_by_ids(
+    request_files: list[str], save_dir: str, date_ids: list[int]
+) -> int:
+    error_count = 0
+    for date_id in date_ids:
+        num_errors = _get_files_by_id(request_files, save_dir, date_id)
+        error_count += num_errors
+
+    return error_count
+
+
+def _get_files_by_dates(
+    request_files: list[str], save_dir: str, dates: list[datetime]
+) -> int:
+    date_ids = _get_ids_from_dates(dates)
+    return _get_files_by_ids(request_files, save_dir, date_ids)
+
+
 def get_files_by_date_str(request_files: list[str], save_dir: str, request_date: str):
+    """Download files for a specific date."""
     date = _check_valid_date(request_date)
     if date is None:
-        logging.warning(f"Invalid date: {request_date}, skipping")
+        logging.warning("Invalid date: %s, skipping", request_date)
         return
 
-    logging.info(f"Downloading files for {date}...")
-    _get_file_by_date(request_files, save_dir, date)
+    logging.info("Downloading files for %s...", date)
+    num_errors = _get_files_by_date(request_files, save_dir, date)
+    logging.info("Finished downloading files for %s. %d errors.", date, num_errors)
 
 
 def get_last_files(request_files: list[str], save_dir: str, days: int):
-    """"""
+    """Download files in the last N days."""
+
     date_ids = _get_least_ids(days)
+    num_errors = _get_files_by_ids(request_files, save_dir, date_ids)
 
-    for date_id in date_ids:
-        for request_file in request_files:
-            _get_file_by_id(
-                request_file=request_file,
-                save_dir=save_dir,
-                date_id=date_id,
-            )
-
-    logging.info(f"Finished downloading lastest {days} days.")
+    logging.info("Finished downloading lastest %d days. %d errors.", days, num_errors)
 
 
 def get_lastest_files(request_files: list[str], save_dir: str):
-    for request_file in request_files:
-        _get_file_by_id(
-            request_file=request_file,
-            save_dir=save_dir,
-            date_id=LASTEST_ID,
-        )
+    num_errors = _get_files_by_date(request_files, save_dir, LASTEST_DATE)
 
-    logging.info(f"Finished downloading lastest files from {LASTEST_DATE}.")
+    logging.info(
+        "Finished downloading lastest files from %s. %d errors.",
+        LASTEST_DATE.strftime("%Y-%m-%d"),
+        num_errors,
+    )
 
 
 def get_range_files(
@@ -324,26 +358,23 @@ def get_range_files(
     ):
         return
 
-    valid_dates = get_valid_dates(from_date, to_date)
-    date_ids = _get_ids_from_dates(valid_dates)
+    valid_dates = _get_valid_dates(from_date, to_date)
+    num_errors = _get_files_by_dates(request_files, save_dir, valid_dates)
 
-    for date_id in date_ids:
-        for request_file in request_files:
-            _get_file_by_id(
-                request_file=request_file,
-                save_dir=save_dir,
-                date_id=date_id,
-            )
-
-    logging.info(f"Finished downloading files from {start_date} to {end_date}.")
+    logging.info(
+        "Finished downloading files from %s to %s. %d errors.",
+        start_date,
+        end_date,
+        num_errors,
+    )
 
 
 def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
-    """Retry download errors in error file."""
+    """Retry download errors in error log file."""
 
     logging.info("Retrying download errors...")
 
-    # check empty errors file
+    # check empty error log
     if os.stat(errors_file).st_size == 0:
         logging.info("No errors.")
         return
@@ -360,9 +391,10 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
             date_id=date_id,
         )
         if not status:
-            logging.error("Download {request_file} of {date_id} failed.")
+            logging.error("Download %s of %d failed.", request_file, date_id)
+            continue
 
-        # remove error
+        # remove error from error log
         errors = errors[~((errors[0] == date_id) & (errors[1] == request_file))]
 
     errors.to_csv(errors_file, index=False, header=False)
@@ -382,9 +414,9 @@ def apply_config(xargs: argparse.Namespace) -> argparse.Namespace:
     xargs.dateformat = config.get("BASE", "dateformat")
     xargs.output = config.get("BASE", "output")
     xargs.logfile = config.get("BASE", "logfile")
-    xargs.error = config.get("BASE", "errorfile")
+    xargs.error_file = config.get("BASE", "error_file")
     xargs.loglevel = config.get("BASE", "loglevel")
-    xargs.files = config.get("BASE", "downloadfiles")
+    xargs.files = config.get("BASE", "download_files")
 
     return xargs
 
@@ -400,9 +432,10 @@ def run(xargs: argparse.Namespace):
     logging.info("--------------------" * 3)
     logging.info("Starting...")
 
+    # get lastest info from SGX website
     with sync_playwright() as playwright:
         LASTEST_ID, LASTEST_DATE = _get_lastest_info(playwright)
-        logging.info(f"Lastest date: {LASTEST_DATE}")
+        logging.info("Lastest date: %s", LASTEST_DATE.strftime("%Y-%m-%d"))
 
     if not os.path.exists(xargs.output):
         os.mkdir(xargs.output)
@@ -433,6 +466,9 @@ def get_config(config_path: str) -> configparser.ConfigParser:
     return config
 
 
+URL_PATTERN: str
+DATABASE_PATH: str
+
 if __name__ == "__main__":
     default_config = get_config("configs/default_config.ini")
     parser = argparse.ArgumentParser(description="SGX derivatives data downloader")
@@ -441,6 +477,8 @@ if __name__ == "__main__":
         type=str,
         help="Path of config file.",
     )
+
+    # -------------------- Configs --------------------
     parser.add_argument(
         "--output",
         type=str,
@@ -451,7 +489,7 @@ if __name__ == "__main__":
         "--files",
         type=str,
         help="List of files to download.",
-        default=default_config.get("BASE", "downloadfiles"),
+        default=default_config.get("BASE", "download_files"),
     )
     parser.add_argument(
         "--logfile",
@@ -464,7 +502,7 @@ if __name__ == "__main__":
         "--error-file",
         type=str,
         help="Path to the file that stores the list of failed downloads.",
-        default=default_config.get("BASE", "errorfile"),
+        default=default_config.get("BASE", "error_file"),
     )
     parser.add_argument(
         "--loglevel",
