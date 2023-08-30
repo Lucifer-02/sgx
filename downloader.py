@@ -135,7 +135,7 @@ def _get_files_by_date(
     save_dir: str,
     request_date: datetime,
 ) -> int:
-    if _is_weekend(request_date) or _is_future(request_date):
+    if _is_weekend(request_date) or _is_future(request_date, LASTEST_DATE):
         return -1
 
     date_id = _get_id_from_date(date=request_date)
@@ -150,7 +150,7 @@ def _get_valid_dates(start_date: datetime, end_date: datetime) -> list[datetime]
     dates = []
     date = start_date
     while date <= end_date:
-        if not _is_weekend(date) and not _is_future(date):
+        if not _is_weekend(date) and not _is_future(date, LASTEST_DATE):
             dates.append(date)
         else:
             logging.debug("Skip %s", date.strftime("%Y-%m-%d"))
@@ -211,8 +211,8 @@ def _get_lastest_info(playwright: Playwright) -> tuple[int, datetime]:
     return date_id, date
 
 
-def _is_future(date: datetime) -> bool:
-    if date > LASTEST_DATE:
+def _is_future(date: datetime, current_date: datetime) -> bool:
+    if date > current_date:
         logging.warning("%s is not in the historical.", date)
         return True
     return False
@@ -266,19 +266,18 @@ def _get_files_by_id(request_files: list[str], save_dir: str, date_id: int) -> i
     if not os.path.exists(sub_dir):
         os.mkdir(sub_dir)
 
-    error_count = 0
+    states = []
 
-    for request_file in request_files:
-        status = _get_file_by_id(request_file, sub_dir, date_id)
-        if not status:
-            error_count += 1
+    # for request_file in request_files:
+    #     status = _get_file_by_id(request_file, sub_dir, date_id)
+    #     states.append(status)
 
     # using multi-processing
-    # with Pool(processes=12) as pool:
-    #     pool.starmap(
-    #         _get_file_by_id,
-    #         [(request_file, sub_dir, date_id) for request_file in request_files],
-    #     )
+    with Pool(processes=12) as pool:
+        states = pool.starmap(
+            _get_file_by_id,
+            [(request_file, sub_dir, date_id) for request_file in request_files],
+        )
 
     # using multi-threading
     # with ThreadPoolExecutor(max_workers=12) as executor:
@@ -289,7 +288,8 @@ def _get_files_by_id(request_files: list[str], save_dir: str, date_id: int) -> i
     #     for future in as_completed(futures):
     #         future.result()
 
-    return error_count
+    # count number of errors
+    return len(states) - sum(states)
 
 
 def _get_files_by_ids(
@@ -377,8 +377,8 @@ def get_range_files(
     )
 
 
-def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
-    """Retry download errors in error log file."""
+def retry_download_errors(errors_file, save_dir):
+    """Retry download errors files in error log file."""
 
     logging.info("Retrying download errors...")
 
@@ -409,13 +409,22 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
     errors.to_csv(errors_file, index=False, header=False)
 
 
-def apply_config(xargs: argparse.Namespace) -> argparse.Namespace:
-    """Apply config file to args."""
+def get_config(config_path: str) -> configparser.ConfigParser:
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    return config
+
+
+def apply_config(xargs: argparse.Namespace) -> argparse.Namespace | None:
+    """Apply config to args."""
 
     global URL_PATTERN, DATABASE_PATH
 
-    config = configparser.ConfigParser()
-    config.read(xargs.config)
+    if not os.path.exists(xargs.config):
+        logging.error("Config file is not exists!")
+        return None
+
+    config = get_config(xargs.config)
 
     URL_PATTERN = config.get("BASE", "URL_PATTERN")
     DATABASE_PATH = config.get("BASE", "database")
@@ -442,14 +451,14 @@ def run(xargs: argparse.Namespace):
     logging.info("Starting...")
 
     # get lastest info from SGX website
-    with sync_playwright() as playwright:
-        LASTEST_ID, LASTEST_DATE = _get_lastest_info(playwright)
-        logging.info("Lastest date: %s", LASTEST_DATE.strftime("%Y-%m-%d"))
+    # with sync_playwright() as playwright:
+    #     LASTEST_ID, LASTEST_DATE = _get_lastest_info(playwright)
+    #     logging.info("Lastest date: %s", LASTEST_DATE.strftime("%Y-%m-%d"))
 
-    # LASTEST_ID = 5494
-    # LASTEST_DATE = datetime(2023, 8, 28)
+    LASTEST_ID = 5495
+    LASTEST_DATE = datetime(2023, 8, 29)
 
-    if not (xargs.update or xargs.day or xargs.start or xargs.retry):
+    if not (xargs.update or xargs.day or xargs.start or xargs.retry or xargs.last):
         logging.info("Please choose at least an action!")
         sys.exit()
 
@@ -476,17 +485,11 @@ def run(xargs: argparse.Namespace):
     logging.info("Done.")
 
 
-def get_config(config_path: str) -> configparser.ConfigParser:
-    config = configparser.ConfigParser()
-    config.read(config_path)
-    return config
-
-
 URL_PATTERN: str
 DATABASE_PATH: str
 
 if __name__ == "__main__":
-    default_config = get_config("configs/default_config.ini")
+    default_config = get_config("configs/default.cfg")
     parser = argparse.ArgumentParser(description="SGX derivatives data downloader")
     parser.add_argument(
         "--config",
@@ -504,20 +507,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--files",
         type=str,
-        help="List of files to download.",
+        help="List of file names to download.",
         default=default_config.get("BASE", "download_files"),
     )
     parser.add_argument(
         "--logfile",
         type=str,
-        help="Log file path, default is downloader.log.",
+        help="Log file path",
         default=default_config.get("BASE", "logfile"),
     )
 
     parser.add_argument(
         "--error-file",
         type=str,
-        help="Path to the file that stores the list of failed downloads.",
+        help="Path of the file that stores the list of failed downloads.",
         default=default_config.get("BASE", "error_file"),
     )
     parser.add_argument(
@@ -536,7 +539,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--retry",
         action="store_true",
-        help="Redownload files listed in failed download log.",
+        help="Redownload files listed in error log.",
     )
     parser.add_argument(
         "--update",
@@ -546,18 +549,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--day",
         type=str,
-        help="Download data for a specific day.",
+        help="Download data for a specific day. Format: YYYY-MM-DD",
     )
     parser.add_argument(
         "--start",
         type=str,
-        help="Start date of a range download job.",
+        help="Start of a date range want to download. Format: YYYY-MM-DD",
         required="--end" in sys.argv,
     )
     parser.add_argument(
         "--end",
         type=str,
-        help="End date of a range download job.",
+        help="End of a date range want to download. Format: YYYY-MM-DD",
         required="--start" in sys.argv,
     )
 
@@ -569,6 +572,8 @@ if __name__ == "__main__":
 
     if args.config is not None:
         args = apply_config(args)
+        if args is None:
+            sys.exit()
     else:
         URL_PATTERN = default_config.get("BASE", "URL_PATTERN")
         DATABASE_PATH = default_config.get("BASE", "database")
