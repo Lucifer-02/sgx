@@ -342,7 +342,7 @@ def get_lastest_files(request_files: list[str], save_dir: str):
     num_errors = _get_files_by_date(request_files, save_dir, LASTEST_DATE)
 
     logging.info(
-        "Finished downloading lastest files from %s. %d errors.",
+        "Finished downloading lastest files on %s. %d errors.",
         LASTEST_DATE.strftime("%Y-%m-%d"),
         num_errors,
     )
