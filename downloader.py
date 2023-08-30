@@ -273,8 +273,9 @@ def _get_files_by_id(request_files: list[str], save_dir: str, date_id: int) -> i
         if not status:
             error_count += 1
 
-    # with Pool() as p:
-    #     p.starmap(
+    # using multi-processing
+    # with Pool(processes=12) as pool:
+    #     pool.starmap(
     #         _get_file_by_id,
     #         [(request_file, sub_dir, date_id) for request_file in request_files],
     #     )
@@ -394,11 +395,12 @@ def retry_download_errors(errors_file="errors.csv", save_dir="downloads"):
         request_file = row[1]
         status = _get_file_by_id(
             request_file=request_file,
-            save_dir=save_dir,
+            # save_dir=save_dir,
+            save_dir=save_dir + "/" + str(date_id),
             date_id=date_id,
         )
         if not status:
-            logging.error("Download %s of %d failed.", request_file, date_id)
+            logging.error("Download %s of id %d failed.", request_file, date_id)
             continue
 
         # remove error from error log
@@ -443,6 +445,13 @@ def run(xargs: argparse.Namespace):
     with sync_playwright() as playwright:
         LASTEST_ID, LASTEST_DATE = _get_lastest_info(playwright)
         logging.info("Lastest date: %s", LASTEST_DATE.strftime("%Y-%m-%d"))
+
+    # LASTEST_ID = 5494
+    # LASTEST_DATE = datetime(2023, 8, 28)
+
+    if not (xargs.update or xargs.day or xargs.start or xargs.retry):
+        logging.info("Please choose at least an action!")
+        sys.exit()
 
     if not os.path.exists(xargs.output):
         os.mkdir(xargs.output)
